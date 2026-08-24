@@ -1,0 +1,83 @@
+// BLAKE3 as C declares it: the hasher's lifecycle, its three initialisers, and the numbers its header
+// holds.
+//
+// **Everything that is C lives in this directory** -- `blake3.c`, `blake3_dispatch.c` and
+// `blake3_portable.c` exactly as upstream publishes them, their two headers, and this file of
+// declarations over them. Nothing here is meant to be called by a program: a hasher is a slab of
+// memory, a key is a pointer with a length nobody checks, and an output length is a `size_t` that can
+// be anything at all. The module above turns those into `blake3`, `Hasher` and a keyed mode that
+// cannot be handed the wrong-sized key.
+//
+// **There is no shim.c.** Every entry point below is an ordinary exported function -- BLAKE3's header
+// declares no macros and no `static inline` -- so there is nothing here that sysl cannot reach
+// directly.
+
+module sh.sysl.blake3.c
+
+@include("blake3.h")
+
+// ## The hasher, asked for rather than transcribed
+//
+// `blake3_hasher` is a key, a chunk state, and a stack of chaining values 55 entries deep. It is
+// declared in the header rather than hidden, but the module above treats it as opaque and sizes its
+// storage from these -- a number written down here would be a second copy of something the header
+// already knows, and this one moves with `BLAKE3_MAX_DEPTH`.
+c const
+    HASHER_SIZE:  usize = "sizeof(blake3_hasher)"
+    HASHER_ALIGN: usize = "_Alignof(blake3_hasher)"
+
+// ## The library's own constants
+//
+// `KEY_LEN` and `OUT_LEN` are both 32, and they mean different things: a keyed hash must be given
+// exactly `KEY_LEN` bytes, while `OUT_LEN` is merely the *default* output length -- BLAKE3 will
+// produce as many bytes as asked for.
+c const
+    KEY_LEN:   usize = "BLAKE3_KEY_LEN"
+    OUT_LEN:   usize = "BLAKE3_OUT_LEN"
+    BLOCK_LEN: usize = "BLAKE3_BLOCK_LEN"
+    CHUNK_LEN: usize = "BLAKE3_CHUNK_LEN"
+    MAX_DEPTH: usize = "BLAKE3_MAX_DEPTH"
+
+// The hasher. Opaque here because a program has no business reading it, and because its layout is
+// upstream's to change.
+opaque struct Hasher
+
+// The version string of the vendored implementation, as a NUL-terminated C string.
+extern "blake3_version" version() -> *u8
+
+// ## The three modes
+//
+// BLAKE3 is one compression function reached three ways, and the mode is fixed at initialisation
+// rather than at finalisation. That is why there are three of these and one `finalize`.
+
+// Ordinary hashing.
+extern "blake3_hasher_init" init(h: *Hasher)
+
+// Keyed hashing, for a message authentication code. `key` must point at exactly `KEY_LEN` bytes --
+// C's `const uint8_t key[32]` is a pointer with a comment and checks nothing, which is the whole
+// reason the module above takes a slice and measures it.
+extern "blake3_hasher_init_keyed" init_keyed(h: *Hasher, key: *u8)
+
+// Key derivation. `context` is a NUL-terminated string that should be a hardcoded, globally unique
+// application identifier -- not a password, and not anything supplied at run time.
+extern "blake3_hasher_init_derive_key" init_derive_key(h: *Hasher, context: *u8)
+
+// Key derivation from a context that is not NUL-terminated, which is what a sysl string is.
+extern "blake3_hasher_init_derive_key_raw" init_derive_key_raw(h: *Hasher, context: *u8,
+                                                               context_len: usize)
+
+// ## Absorbing and finalising
+
+extern "blake3_hasher_update" update(h: *Hasher, input: *u8, input_len: usize)
+
+// **Finalising does not consume the hasher**, which is unusual and is worth knowing: the state is
+// untouched, so a caller may finalise, keep pushing, and finalise again. The module above leans on
+// that for `Hasher.finish`.
+extern "blake3_hasher_finalize" finalize(h: *Hasher, out: *u8, out_len: usize)
+
+// The output stream from an arbitrary offset. BLAKE3's extended output is seekable, so this reads the
+// same bytes `finalize` would have produced had it been asked for `seek + out_len` of them.
+extern "blake3_hasher_finalize_seek" finalize_seek(h: *Hasher, seek: u64, out: *u8,
+                                                   out_len: usize)
+
+extern "blake3_hasher_reset" reset(h: *Hasher)

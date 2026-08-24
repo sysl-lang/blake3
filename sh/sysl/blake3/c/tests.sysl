@@ -1,0 +1,48 @@
+module sh.sysl.blake3.c
+@tests
+
+// What the raw layer claims, checked against the BLAKE3 specification and the C ABI rather than
+// against the header.
+//
+// **These are the survey's probes, kept.** The module above places a `blake3_hasher` inside an
+// ordinary sysl struct, as an array of `u64`, and the first assertion is the only thing making that
+// sound. The constants are asserted against the numbers the *specification* fixes, not against what
+// the header happens to say -- a test reading a constant and comparing it to itself passes whatever
+// the header holds.
+
+// **The load-bearing one.** `[N]u64` storage is 8-aligned by construction, and that is the only thing
+// making the state's address good enough for a `blake3_hasher`. Eight is not arbitrary: the chunk
+// state holds a `uint64_t` counter, and a 64-bit field wants a 64-bit boundary. A vectorised rewrite
+// wanting 16 would fail this rather than corrupt a digest.
+@test("the hasher is 8-aligned, which is what a u64 array supplies")
+hasher_wants_eight_byte_alignment()
+    assert_eq(HASHER_ALIGN, 8)
+
+// The rounding the module above does must not lose a byte. `WORDS` there is `(HASHER_SIZE + 7) / 8`,
+// and this is that arithmetic checked where both numbers are in scope.
+@test("rounding the hasher up to whole lanes covers all of it")
+rounding_covers_the_hasher()
+    assert((HASHER_SIZE + 7) / 8 * 8 >= HASHER_SIZE, "the rounded lane count covers the hasher")
+
+// BLAKE3's parameters, as the specification fixes them.
+//
+// **`KEY_LEN` and `OUT_LEN` are both 32 and they are not the same number.** A key must be exactly
+// `KEY_LEN`; `OUT_LEN` is merely the default output length, and BLAKE3 will produce as many bytes as
+// asked for. They are asserted separately because a binding that conflated them would still pass a
+// test that checked only one.
+@test("the key length and the default output length are both 32")
+lengths_are_thirty_two()
+    assert_eq(KEY_LEN, 32)
+    assert_eq(OUT_LEN, 32)
+
+@test("a block is 64 bytes and a chunk is 1024")
+block_and_chunk_are_the_specification_s()
+    assert_eq(BLOCK_LEN, 64)
+    assert_eq(CHUNK_LEN, 1024)
+
+// The tree is at most 54 deep, which is what bounds the chaining-value stack and therefore the size of
+// a hasher. It is the reason a hasher is ~1,900 bytes rather than a few dozen.
+@test("the tree depth is 54, which is what makes a hasher large")
+max_depth_bounds_the_stack()
+    assert_eq(MAX_DEPTH, 54)
+    assert(HASHER_SIZE > MAX_DEPTH * OUT_LEN, "the hasher holds the whole chaining-value stack")

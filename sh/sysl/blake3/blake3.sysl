@@ -1,0 +1,205 @@
+// BLAKE3, bound to the official C implementation.
+//
+//     import sh.sysl.blake3.{blake3, keyed, derive_key}
+//     import sysl.encoding.hex_string
+//
+//     val digest = blake3("abc".bytes)
+//
+//     print(hex_string(digest))
+//
+// ## One function, three modes
+//
+// BLAKE3 is a single compression function reached three ways, and which one you are in is fixed when
+// the hasher starts rather than when it finishes:
+//
+// | | |
+// |---|---|
+// | `blake3(data)` | an ordinary hash |
+// | `keyed(key, data)` | a message authentication code, keyed with exactly 32 bytes |
+// | `derive_key(context, material, out)` | a key derived for one hardcoded purpose |
+//
+// **The three are domain-separated**, which is the property that makes them worth having as separate
+// entry points rather than as conventions a caller applies: the same message under the same key gives
+// unrelated output in each mode, so a value derived for one purpose cannot be replayed as another.
+//
+// ## The output has no natural length
+//
+// BLAKE3 is an extendable-output function. Thirty-two bytes is the default and what the one-shots
+// answer, but `fill` will write as many as you give it room for, and `fill_from` will start anywhere
+// in that stream -- the output is seekable, so the ten-thousandth byte costs no more than the first.
+//
+//     var key: []u8 = [0; 64]
+//
+//     derive_key("myapp 2026-08-24 session keys", material, key)
+//
+// ## Nothing here asks you for storage
+//
+// A hasher is about 1,900 bytes, and every other caller-placed binding in this organisation would
+// have made that your problem -- miniz's `Deflater` is *placed* in a slice you own, because sysl has
+// no allocator to reach for.
+//
+// **This one does not have to, because a `blake3_hasher` holds no pointers.** It is a key, a chunk
+// state and a stack of chaining values, all inline, so it can be copied from one address to another
+// and keep working. That lets the state live inside a `Hasher` as a field, which makes a `Hasher` an
+// ordinary sysl value: it goes in a `var`, it can be passed to a function and returned from one, and
+// there is no storage argument and no alignment to get right.
+//
+// ## What it asks of the machine
+//
+// No allocator, no clock, no file. **But not a bare target either**: `blake3_impl.h` includes
+// `<assert.h>` and `<string.h>`, which clang does not give a freestanding target. Anything with a
+// libc is fine, including the Pico SDK's newlib. The sibling `sha3` package is the one that needs
+// nothing at all.
+//
+// It is also compiled **portable-only** -- no SSE, AVX or NEON -- because sysl runs no build script to
+// detect a CPU with. The package's README says what that costs and why the alternative is worse.
+
+module sh.sysl.blake3
+
+import sh.sysl.blake3.c
+import sysl.slices.{as_ptr, as_mut_ptr}
+import sysl.text.from_cstring
+
+// The hasher's state as whole 64-bit lanes.
+//
+// **The `u64` is doing alignment's job.** A `blake3_hasher` holds a `uint64_t` chunk counter, so it
+// wants an 8-aligned address; an array of `u64` has one by construction, where a `[1912]u8` would
+// promise nothing and need the address arithmetic every other caller-placed binding here writes in C.
+// The size still comes from the header -- this is a rounding of it, not a transcription.
+private const WORDS: usize = (c.HASHER_SIZE + 7) / 8
+
+// How many bytes a key must be. Exactly this, not at least this.
+const KEY_BYTES: usize = c.KEY_LEN
+
+// The default output length, and the length the one-shots answer. **Not a maximum** -- `fill` will
+// write as much as you ask for.
+const OUT_BYTES: usize = c.OUT_LEN
+
+// The version of the vendored C implementation, as it reports itself.
+version() -> string = from_cstring(c.version()).unwrap_or("")
+
+// ## Hashing in one call
+
+// BLAKE3 of `data`, the default 32 bytes of it.
+blake3(data: []const u8) -> [32]u8
+    var h = hasher()
+
+    h.push(data)
+
+    h.finish()
+end blake3
+
+// A keyed BLAKE3 of `data` -- a message authentication code.
+//
+// `key` must be exactly `KEY_BYTES` bytes and must be secret; this is not a password hash and does no
+// stretching. **The key is a key**, meaning 32 bytes from a random source or from `derive_key`.
+keyed(key: []const u8, data: []const u8) -> [32]u8
+    var h = keyed_hasher(key)
+
+    h.push(data)
+
+    h.finish()
+end keyed
+
+// Derive a key of any length from `material`, for the single purpose named by `context`.
+//
+// **`context` must be hardcoded and globally unique to one use** -- upstream's advice is an
+// application name with a date in it, as in `"myapp 2026-08-24 session keys"`. It is not a password,
+// not a salt, and nothing a caller supplies at run time: its whole job is to make sure a key derived
+// here cannot collide with one derived for any other purpose in any other program.
+//
+// `material` is the secret being stretched, and `out` is filled however long it is.
+derive_key(context: string, material: []const u8, out: []u8)
+    var h = deriving_hasher(context)
+
+    h.push(material)
+    h.fill(out)
+
+// BLAKE3 of `data`, filling `out` however long it is.
+//
+// The first 32 bytes are what `blake3` would have answered; asking for more extends the same stream
+// rather than computing something else.
+xof(data: []const u8, out: []u8)
+    var h = hasher()
+
+    h.push(data)
+    h.fill(out)
+
+// ## Feeding a message in pieces
+
+// A BLAKE3 computed over input that arrives in more than one piece.
+//
+// The state lives in the struct, so this is an ordinary value -- `var h = hasher()` and nothing else
+// to arrange. Which of the three modes it is in was fixed by the constructor.
+struct Hasher
+    private state: [WORDS]u64
+
+    private ctx(*self) -> *c.Hasher = ptr_cast(&self.state[0])
+
+    // Absorb another piece of the message. The pieces need no particular size and their boundaries do
+    // not affect the result -- pushing "abc" is the same as pushing "a" then "bc".
+    push(*self, data: []const u8) = c.update(self.ctx(), as_ptr(data), data.len)
+
+    // The default 32-byte output.
+    //
+    // **Finishing does not spend the hasher.** BLAKE3 finalises without disturbing its state, so a
+    // caller may finish, push more, and finish again -- which is what makes a rolling digest over a
+    // growing file cheap. `finishing_twice_agrees` pins that.
+    finish(*self) -> [32]u8
+        var out: [32]u8 = [0; 32]
+
+        c.finalize(self.ctx(), as_mut_ptr(out), 32)
+
+        out
+    end finish
+
+    // Fill `out` with the output stream, however long it is.
+    fill(*self, out: []u8) = c.finalize(self.ctx(), as_mut_ptr(out), out.len)
+
+    // Fill `out` with the output stream starting `seek` bytes into it.
+    //
+    // The stream is seekable, so this costs no more than reading from the beginning -- which is what
+    // lets BLAKE3 stand in for a stream cipher's keystream or verify one block of a large file.
+    fill_from(*self, seek: u64, out: []u8) = c.finalize_seek(self.ctx(), seek, as_mut_ptr(out),
+                                                             out.len)
+
+    // Begin again, in the same mode and with the same key or context.
+    reset(*self) = c.reset(self.ctx())
+end Hasher
+
+// A hasher for ordinary hashing.
+hasher() -> Hasher
+    var h = Hasher([0; WORDS])
+
+    c.init(h.ctx())
+
+    h
+end hasher
+
+// A hasher keyed with exactly `KEY_BYTES` bytes.
+//
+// **This is where the 32 is enforced rather than described.** C's `const uint8_t key[32]` is a pointer
+// the compiler checks nothing about, so a caller passing a 31-byte key would have had a byte read off
+// the end of it.
+keyed_hasher(key: []const u8) -> Hasher
+    require key.len == KEY_BYTES, "a BLAKE3 key is exactly 32 bytes"
+
+    var h = Hasher([0; WORDS])
+
+    c.init_keyed(h.ctx(), as_ptr(key))
+
+    h
+end keyed_hasher
+
+// A hasher deriving a key for the purpose named by `context`.
+//
+// The context is passed by pointer and length rather than as a C string, so a sysl string reaches it
+// unchanged -- including one with an interior NUL, which upstream's NUL-terminated entry point would
+// have truncated.
+deriving_hasher(context: string) -> Hasher
+    var h = Hasher([0; WORDS])
+
+    c.init_derive_key_raw(h.ctx(), as_ptr(context.bytes), context.bytes.len)
+
+    h
+end deriving_hasher

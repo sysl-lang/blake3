@@ -1,0 +1,270 @@
+module sh.sysl.blake3
+@tests
+
+import sysl.encoding.hex_string
+
+// The official vectors, run by `sysl test .`.
+//
+// **Nothing here is checked against a value this binding produced.** Every expected string below is
+// from the BLAKE3 team's published `test_vectors.json`, which is generated from the **Rust** reference
+// implementation -- while the code under test is the **C** one. So this is a cross-implementation
+// check rather than a binding compared against itself, which is the property that makes it worth
+// running: a binding that passed the wrong key length, dropped a chunk or mis-ordered the tree could
+// not make one of these pass by coincidence.
+//
+// **It is one oracle rather than two, and that is a limitation worth naming.** Neither `b3sum` nor a
+// Python BLAKE3 is present on this machine, and installing one would write into a Homebrew tree this
+// account does not own. The published vectors are the reference the algorithm's authors publish, which
+// is the same standing an RFC's vectors have.
+//
+// The input convention is upstream's: byte `i` is `i % 251`, so every length is a different message
+// and the pattern is not a repeat of a whole number of blocks.
+
+// The message of `len` bytes that every vector below is taken over.
+private vector_input(len: usize) -> []u8
+    var out: []u8 = [0; len]
+
+    for i in 0..<len do out[i] = u8(i % 251)
+
+    out
+end vector_input
+
+// The 32-byte key the keyed vectors use, which upstream gives as an ASCII string.
+private vector_key() -> []const u8 = "whats the Elvish word for friend".bytes
+
+// The context string the derive-key vectors use.
+private vector_context() -> string = "BLAKE3 2019-12-27 16:29:52 test vectors context"
+
+// -- Hashing, short messages -----------------------------------------------------------------------
+//
+// 64 is a block and 63 and 65 straddle it, which is where an off-by-one in the buffering shows up.
+
+@test("the published hash vectors below one block")
+hash_vectors_short()
+    assert_eq(hex_string(blake3(vector_input(0))),
+              "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262")
+    assert_eq(hex_string(blake3(vector_input(1))),
+              "2d3adedff11b61f14c886e35afa036736dcd87a74d27b5c1510225d0f592e213")
+    assert_eq(hex_string(blake3(vector_input(63))),
+              "e9bc37a594daad83be9470df7f7b3798297c3d834ce80ba85d6e207627b7db7b")
+    assert_eq(hex_string(blake3(vector_input(64))),
+              "4eed7141ea4a5cd4b788606bd23f46e212af9cacebacdc7d1f4c6dc7f2511b98")
+    assert_eq(hex_string(blake3(vector_input(65))),
+              "de1e5fa0be70df6d2be8fffd0e99ceaa8eb6e8c93a63f2d8d1c30ecb6b263dee")
+end hash_vectors_short
+
+// -- Hashing across the chunk boundary ---------------------------------------------------------------
+//
+// **This is the group that matters most for BLAKE3 specifically.** A chunk is 1,024 bytes and the
+// tree structure begins at the second one, so 1023, 1024 and 1025 are the three inputs that tell a
+// working tree from a chaining bug -- everything below 1024 hashes as a lone chunk and exercises none
+// of it.
+
+@test("the published hash vectors around the 1024-byte chunk boundary")
+hash_vectors_chunk_boundary()
+    assert_eq(hex_string(blake3(vector_input(1023))),
+              "10108970eeda3eb932baac1428c7a2163b0e924c9a9e25b35bba72b28f70bd11")
+    assert_eq(hex_string(blake3(vector_input(1024))),
+              "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7")
+    assert_eq(hex_string(blake3(vector_input(1025))),
+              "d00278ae47eb27b34faecf67b4fe263f82d5412916c1ffd97c8cb7fb814b8444")
+end hash_vectors_chunk_boundary
+
+@test("the published hash vectors over many chunks")
+hash_vectors_many_chunks()
+    assert_eq(hex_string(blake3(vector_input(2048))),
+              "e776b6028c7cd22a4d0ba182a8bf62205d2ef576467e838ed6f2529b85fba24a")
+    assert_eq(hex_string(blake3(vector_input(3072))),
+              "b98cb0ff3623be03326b373de6b9095218513e64f1ee2edd2525c7ad1e5cffd2")
+    assert_eq(hex_string(blake3(vector_input(4096))),
+              "015094013f57a5277b59d8475c0501042c0b642e531b0a1c8f58d2163229e969")
+    assert_eq(hex_string(blake3(vector_input(8192))),
+              "aae792484c8efe4f19e2ca7d371d8c467ffb10748d8a5a1ae579948f718a2a63")
+end hash_vectors_many_chunks
+
+// -- The other two modes -----------------------------------------------------------------------------
+
+@test("the published keyed vectors")
+keyed_vectors()
+    assert_eq(hex_string(keyed(vector_key(), vector_input(0))),
+              "92b2b75604ed3c761f9d6f62392c8a9227ad0ea3f09573e783f1498a4ed60d26")
+    assert_eq(hex_string(keyed(vector_key(), vector_input(1))),
+              "6d7878dfff2f485635d39013278ae14f1454b8c0a3a2d34bc1ab38228a80c95b")
+    assert_eq(hex_string(keyed(vector_key(), vector_input(1024))),
+              "75c46f6f3d9eb4f55ecaaee480db732e6c2105546f1e675003687c31719c7ba4")
+    assert_eq(hex_string(keyed(vector_key(), vector_input(2048))),
+              "879cf1fa2ea0e79126cb1063617a05b6ad9d0b696d0d757cf053439f60a99dd1")
+end keyed_vectors
+
+@test("the published derive-key vectors")
+derive_key_vectors()
+    var out: []u8 = [0; 32]
+
+    derive_key(vector_context(), vector_input(0), out)
+    assert_eq(hex_string(out), "2cc39783c223154fea8dfb7c1b1660f2ac2dcbd1c1de8277b0b0dd39b7e50d7d")
+
+    derive_key(vector_context(), vector_input(1), out)
+    assert_eq(hex_string(out), "b3e2e340a117a499c6cf2398a19ee0d29cca2bb7404c73063382693bf66cb06c")
+
+    derive_key(vector_context(), vector_input(1024), out)
+    assert_eq(hex_string(out), "7356cd7720d5b66b6d0697eb3177d9f8d73a4a5c5e968896eb6a689684302706")
+
+    derive_key(vector_context(), vector_input(2048), out)
+    assert_eq(hex_string(out), "7b2945cb4fef70885cc5d78a87bf6f6207dd901ff239201351ffac04e1088a23")
+end derive_key_vectors
+
+// **The three modes must disagree on the same input**, which is the domain separation that makes them
+// worth having as separate entry points. A binding that ignored the key, or that reached the wrong
+// initialiser, would make two of these equal.
+@test("the three modes are domain-separated")
+modes_disagree()
+    val plain = blake3(vector_input(64))
+    val mac = keyed(vector_key(), vector_input(64))
+
+    var derived: []u8 = [0; 32]
+
+    derive_key(vector_context(), vector_input(64), derived)
+
+    assert(plain[0] != mac[0] || plain[1] != mac[1], "hashing and keyed hashing differ")
+    assert(plain[0] != derived[0] || plain[1] != derived[1], "hashing and key derivation differ")
+    assert(mac[0] != derived[0] || mac[1] != derived[1], "keyed hashing and key derivation differ")
+end modes_disagree
+
+// -- Extendable output ---------------------------------------------------------------------------------
+
+// Each published case is a 131-byte extended output whose first 32 bytes are the default-length
+// answer. **Checking the whole thing is what says the output is one stream rather than a digest with
+// something appended** -- upstream's own instruction is to verify both.
+@test("the extended output extends the default one")
+extended_output()
+    var out: []u8 = [0; 131]
+
+    xof(vector_input(1024), out)
+
+    assert_eq(hex_string(out),
+              "42214739f095a406f3fc83deb889744ac00df831c10daa55189b5d121c855af7" +
+              "1cf8107265ecdaf8505b95d8fcec83a98a6a96ea5109d2c179c47a387ffbb404" +
+              "756f6eeae7883b446b70ebb144527c2075ab8ab204c0086bb22b7c93d465efc5" +
+              "7f8d917f0b385c6df265e77003b85102967486ed57db5c5ca170ba441427ed9a" +
+              "fa684e")
+
+    assert_eq(hex_string(out[0..<32]), hex_string(blake3(vector_input(1024))))
+end extended_output
+
+// **The output is seekable**, which is the property that lets BLAKE3 stand in for a keystream: the
+// bytes from offset 64 must be the bytes at offset 64 of the whole stream, computed without producing
+// the ones before them.
+@test("seeking into the output finds the same bytes")
+seek_agrees_with_the_stream()
+    var whole: []u8 = [0; 131]
+    var tail: []u8 = [0; 67]
+
+    var h = hasher()
+
+    h.push(vector_input(1024))
+    h.fill(whole)
+    h.fill_from(64, tail)
+
+    assert_eq(hex_string(tail), hex_string(whole[64..<131]))
+end seek_agrees_with_the_stream
+
+// -- Feeding a message in pieces -------------------------------------------------------------------
+
+@test("a hasher agrees with the one-shot")
+hasher_agrees_with_oneshot()
+    var h = hasher()
+
+    h.push(vector_input(2048))
+
+    assert_eq(hex_string(h.finish()), hex_string(blake3(vector_input(2048))))
+end hasher_agrees_with_oneshot
+
+// **Where the pieces are cut must not matter**, and the splits below are chosen to land inside a
+// block, on a block boundary and inside the second chunk -- the three places a buffering bug hides.
+@test("the digest does not depend on where the message was split")
+splitting_does_not_matter()
+    val whole = vector_input(2048)
+
+    var h = hasher()
+
+    h.push(whole[0..<1])
+    h.push(whole[1..<64])
+    h.push(whole[64..<1024])
+    h.push(whole[1024..<1500])
+    h.push(whole[1500..<2048])
+
+    assert_eq(hex_string(h.finish()), hex_string(blake3(vector_input(2048))))
+end splitting_does_not_matter
+
+// **Finalising does not spend the hasher**, which is unusual enough to be worth pinning: BLAKE3
+// finalises without disturbing its state, so a caller may finish, push more and finish again. That is
+// what makes a rolling digest over a growing file cheap.
+@test("finishing twice agrees, and pushing after a finish continues the message")
+finishing_twice_agrees()
+    var h = hasher()
+
+    h.push(vector_input(64))
+
+    val once = h.finish()
+    val again = h.finish()
+
+    assert_eq(hex_string(again), hex_string(once))
+
+    h.push(vector_input(0))
+
+    assert_eq(hex_string(h.finish()), hex_string(once))
+end finishing_twice_agrees
+
+@test("reset makes a hasher usable again")
+reset_starts_over()
+    var h = hasher()
+
+    h.push(vector_input(1024))
+    h.reset()
+    h.push(vector_input(64))
+
+    assert_eq(hex_string(h.finish()), hex_string(blake3(vector_input(64))))
+end reset_starts_over
+
+// A keyed hasher must reset into the *same* mode, keeping its key rather than falling back to plain
+// hashing -- which is the one way a reset could silently weaken a MAC.
+@test("reset keeps the key")
+reset_keeps_the_key()
+    var h = keyed_hasher(vector_key())
+
+    h.push(vector_input(1024))
+    h.reset()
+    h.push(vector_input(0))
+
+    assert_eq(hex_string(h.finish()), hex_string(keyed(vector_key(), vector_input(0))))
+end reset_keeps_the_key
+
+// The state holds no pointers, so a `Hasher` is an ordinary value that may be copied and keep
+// working. **This is the test that licenses the whole design** -- it is why the state lives inside the
+// struct instead of in a caller-supplied slice, and why this package needs no alignment shim.
+@test("a hasher survives being moved")
+hasher_relocates()
+    val whole = vector_input(2048)
+
+    var h = hasher()
+
+    h.push(whole[0..<1500])
+
+    var moved = h
+
+    moved.push(whole[1500..<2048])
+
+    assert_eq(hex_string(moved.finish()), hex_string(blake3(vector_input(2048))))
+end hasher_relocates
+
+// -- The surface ------------------------------------------------------------------------------------
+
+@test("the key length is 32, and it is the header's number")
+key_length_is_thirty_two()
+    assert_eq(KEY_BYTES, 32)
+    assert_eq(OUT_BYTES, 32)
+    assert_eq(vector_key().len, KEY_BYTES)
+
+@test("the vendored implementation reports its version")
+version_is_reported()
+    assert(version().len > 0, "the C implementation names a version")

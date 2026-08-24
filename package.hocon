@@ -1,0 +1,67 @@
+// BLAKE3, bound to the official C implementation.
+//
+// There is no `dependencies` block because BLAKE3's C depends on nothing a package manager could
+// fetch -- it includes `<assert.h>`, `<stdbool.h>`, `<stddef.h>`, `<stdint.h>` and `<string.h>` and
+// that is the whole list. The five files it needs are carried in this package.
+//
+// This is the block a *consumer* writes to reach this package:
+//
+//     dependencies {
+//       blake3 { git = "github.com/sysl-lang/blake3", version = "0.1.0" }
+//     }
+//
+// The coordinate is identity rather than a URL, so it carries no `https://`, and the version is the
+// tag `v0.1.0` on this repository.
+
+package {
+  name    = "blake3"
+  version = "0.1.0"
+
+  // The compiler this was built and verified against, rather than a probed floor. Nothing here
+  // reaches for a recent language feature; the number says what was actually run.
+  sysl = "0.0.77"
+}
+
+// **There is deliberately no `requires` block.** A capability clause says what a package asks of
+// *sysl*, and BLAKE3 hashes buffers it was handed: it opens no file, reads no clock, and calls no
+// allocator -- there is no `malloc`, `calloc` or `free` in any of the three `.c` files carried here,
+// which is what makes the caller-owned arrangement below possible at all.
+//
+// **That is not a claim that it builds for a bare target, and here it does not.** `blake3_impl.h`
+// includes `<assert.h>` and `<string.h>`, and clang gives a freestanding target neither, so
+// `--target thumb-freestanding` fails on the include. Any target with a libc is fine, and that covers
+// the interesting ones: the Pico SDK's newlib, Zephyr, and a FreeRTOS application. The sibling `sha3`
+// package is the one that genuinely needs nothing.
+//
+// **What is NOT here is a `@link` directive** -- the implementation is compiled from the `.c` carried
+// in this package, so there is no external library for the linker to be given.
+
+// What BLAKE3's own C is compiled with.
+//
+// **BLAKE3 ships one portable implementation and several vectorised ones, and the build has to say
+// which.** Upstream expects a build script to detect the CPU and hand the right files to the
+// compiler; sysl compiles a package's C declaratively and runs no build script, so the choice is made
+// here instead -- portable everywhere, and only the three portable `.c` files vendored.
+//
+// The four `NO_` macros switch off the x86 paths, whose implementations live in files this package
+// does not carry. Without them `blake3_dispatch.c` refers to `blake3_hash_many_sse2` and friends and
+// the link fails.
+//
+// **`BLAKE3_USE_NEON` is the one that is easy to miss, and it is the one that bites on this
+// machine.** It is not an x86 macro and none of the four covers it: `blake3_impl.h` autodetects it to
+// **1** on any aarch64 target -- a Mac, a phone, a Pi -- so a build carrying only the four above
+// links against a `blake3_hash_many_neon` that is not here.
+//
+// It is set to 0 rather than answered by vendoring `blake3_neon.c`, because that file includes
+// `<arm_neon.h>` unconditionally and guards none of its body: carrying it would break every target
+// without NEON, which includes the RP2350 this organisation builds for. The cost is throughput on
+// large inputs on ARM, and the alternative is a package that builds in fewer places.
+defines {
+  "sh/sysl/blake3/c/{blake3,blake3_dispatch,blake3_portable}.c" {
+    BLAKE3_NO_SSE2   = true
+    BLAKE3_NO_SSE41  = true
+    BLAKE3_NO_AVX2   = true
+    BLAKE3_NO_AVX512 = true
+    BLAKE3_USE_NEON  = 0
+  }
+}
