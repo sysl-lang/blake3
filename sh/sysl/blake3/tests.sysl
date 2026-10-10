@@ -22,7 +22,7 @@ import sysl.encoding.hex_string
 
 // The message of `len` bytes that every vector below is taken over.
 private vector_input(len: usize) -> []u8
-    var out: []u8 = [0; len]
+    val out: []u8 = [0; len]
 
     for i in 0..<len do out[i] = u8(i % 251)
 
@@ -98,7 +98,7 @@ end keyed_vectors
 
 @test("the published derive-key vectors")
 derive_key_vectors()
-    var out: []u8 = [0; 32]
+    val out: []u8 = [0; 32]
 
     derive_key(vector_context(), vector_input(0), out)
     assert_eq(hex_string(out), "2cc39783c223154fea8dfb7c1b1660f2ac2dcbd1c1de8277b0b0dd39b7e50d7d")
@@ -121,7 +121,7 @@ modes_disagree()
     val plain = blake3(vector_input(64))
     val mac = keyed(vector_key(), vector_input(64))
 
-    var derived: []u8 = [0; 32]
+    val derived: []u8 = [0; 32]
 
     derive_key(vector_context(), vector_input(64), derived)
 
@@ -137,7 +137,7 @@ end modes_disagree
 // something appended** -- upstream's own instruction is to verify both.
 @test("the extended output extends the default one")
 extended_output()
-    var out: []u8 = [0; 131]
+    val out: []u8 = [0; 131]
 
     xof(vector_input(1024), out)
 
@@ -156,8 +156,8 @@ end extended_output
 // the ones before them.
 @test("seeking into the output finds the same bytes")
 seek_agrees_with_the_stream()
-    var whole: []u8 = [0; 131]
-    var tail: []u8 = [0; 67]
+    val whole: []u8 = [0; 131]
+    val tail: []u8 = [0; 67]
 
     var h = hasher()
 
