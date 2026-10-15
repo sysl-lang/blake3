@@ -3,6 +3,8 @@
 BLAKE3 for [sysl](https://github.com/sysl-lang/sysl) — hashing, keyed hashing and key derivation,
 bound to the [official C implementation](https://github.com/BLAKE3-team/BLAKE3).
 
+*An independent sysl package for BLAKE3. It is not affiliated with or endorsed by BLAKE3's authors or trademark holders.*
+
 ```sysl
 import sh.sysl.blake3.{blake3, keyed, derive_key}
 import sysl.encoding.hex_string
